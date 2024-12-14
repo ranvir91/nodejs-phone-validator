@@ -6,6 +6,7 @@ dotenv.config({
     path : './.env'
 });
 
+// connect mongodb atlas here
 connectDB()
 .then(()=>{
     app.listen(process.env.PORT || 8000, ()=> {
@@ -16,3 +17,7 @@ connectDB()
     console.log(`MONGODB connection failed`, err);    
 })
 
+// api to check the server health
+app.get('/api/v1/health', (req, res) => {
+    res.send('App is working awesome!')
+});
