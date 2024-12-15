@@ -20,6 +20,15 @@ const userSchema = new mongoose.Schema({
         required : true,
         trim : true
     },
+    phone: { 
+        type: String,
+        required: true,
+        unique: true
+    },
+    isPhoneVerified: {
+        type: Boolean,
+        default: false
+    },
     refreshToken : {
         type : String
     }

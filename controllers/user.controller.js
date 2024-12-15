@@ -2,92 +2,9 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
-
-
-// register user
-const registerUser = asyncHandler(async(req, res)=> {
-    // get parameters from front or form data
-    const {name , email, password} = req.body;
-
-    // console.log(req.body, 'dddd');
-
-    if(email==="") {
-        throw new ApiError(400, "Error in register user, Email is required");
-    }
-    if(name==="") {
-        throw new ApiError(400, "Error in register user, Name is required");
-    }
-    if(password==="") {
-        throw new ApiError(400, "Error in register user, Password is required");
-    }
-
-    // if all variables are ok then save to database
-    const user = await User.create({
-        name : name ,
-        email,
-        password
-    });
-    // if key value are same name then we can write as like this also in ES6 (email and password)
-
-    const createdUser = await User.findById(user._id).select(
-        "-password -refreshToken"
-    );
-
-    if(!createdUser) {
-        throw new ApiError(500, "Error while registering the user");
-    }
-
-    return res.status(201).json(
-        new ApiResponse(200, createdUser, "User registered successfully.")
-    );
-
-});
-
-// login user
-const loginUser = asyncHandler(async(req, res)=> {
-    const { email, password} = req.body;
-
-    if(!email) {
-        throw new ApiError(400, "Email is required");        
-    }
-    if(!password) {
-        throw new ApiError(400, "Password is required");        
-    }
-
-    const user = await User.findOne({
-        $or : [ {email} ]
-    });
-
-    if(!user) {
-        throw new ApiError(404, "User doesnot exists");
-    }
-
-    const isPasswordValid = await user.isPasswordCorrect(password);
-
-    if(!isPasswordValid) {
-        throw new ApiError(401, "Invalid user credentials");
-    }
-
-    const { accessToken, refreshToken } = await generateAccessAndRefreshToken(user._id);
-
-    const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
-
-    const cookieOptions = { httpOnly : true, secure: true};
-
-    res.status(200)
-    .cookie("accessToken", accessToken, cookieOptions)
-    .cookie("refreshToken", refreshToken, cookieOptions)
-    .json(
-        new ApiResponse(200, {
-            user : loggedInUser,
-            accessToken : accessToken,
-            refreshToken : refreshToken,
-        },
-        "User logged in successfully"
-        )
-    )
-
-});
+import { VerificationCode } from "../models/verificationCode.model.js";
+import { sendSMS } from "../utils/sendSMS.js";
+// import { generateCode } from "../utils/CodeGenerator.js";
 
 
 // logout user
@@ -120,20 +37,145 @@ const logoutUser = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, {}, "User logged Out"))    
 });
 
-// logout user
-const validateNumber = asyncHandler(async (req, res) => {
+// generate 6 digit random code
+const generateCode = () => Math.floor(100000 + Math.random() * 900000); // 6-digit code
 
-    const {phonenumber} = req.body;
 
-    console.log(req.body, "dddd");
+// register user and send code on phone
+const sendCode = asyncHandler(async(req, res)=> {
+    // get parameters from front or form data
+    const {name , email, password, phone} = req.body;
+    const verificationcode = generateCode();
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes from now
+
+    // console.log(verificationcode, 'ddd');
+
+    if(email==="") {
+        throw new ApiError(400, "Error in register user, Email is required");
+    }
+    if(name==="") {
+        throw new ApiError(400, "Error in register user, Name is required");
+    }
+    if(phone==="") {
+        throw new ApiError(400, "Error in register user, Phone is required");
+    }
+    if(password==="") {
+        throw new ApiError(400, "Error in register user, Password is required");
+    }
+
+    // Save or update the verification code
+    await VerificationCode.findOneAndUpdate(
+        { phone },
+        { verificationCode: verificationcode, expiresAt, updatedAt: new Date() },
+        { upsert: true, new: true }
+    );
+
+    // Send the code via twilio SMS
+    await sendSMS(phone, `Your verification code is: ${verificationcode}`);
+
+    // save user to the database
+    const user = await User.create({
+        name : name ,
+        phone : phone,
+        email,
+        password
+    });
+
+    // if key value are same name then we can write as like this also in ES6 (email and password)
+    const createdUser = await User.findById(user._id).select(
+        "-password -refreshToken"
+    );
+
+    if(!createdUser) {
+        throw new ApiError(500, "Error while registering the user");
+    }
+
+    // create login session and set cookie here
+    const { refreshToken, accessToken } = await generateAccessAndRefreshToken(user._id);
+    const cookieOptions = {httpOnly: true, secure: true};
+
+    // dont send created user data to response
+    // =================================remove this later
+    return res.status(201)
+    .cookie("accessToken", accessToken, cookieOptions)
+    .cookie("refreshToken", refreshToken, cookieOptions)
+    .json(
+        new ApiResponse(200, {
+            user : createdUser,
+            accessToken : accessToken,
+            refreshToken : refreshToken,
+        }, `Verification code sent successfully. Phone : ${phone}, Code: ${verificationcode}`)
+    );
+
+});
+
+// resend code
+const resendCode = asyncHandler(async(req, res) => {
+    const { phone } = req.body;
+
+    if (!phone) {
+        throw new ApiError(400, "Phone is required");        
+    }
+
+    const newCode = generateCode(); // generate new code
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // Code expires in 2 minutes
+
+    // Update the verification code for the phone number or create a new record if not present
+    const result = await VerificationCode.findOneAndUpdate(
+        { phone }, // Query to find the phone number
+        { verificationCode: newCode, expiresAt, updatedAt: new Date() }, // Update data
+        { upsert: true, new: true } // Create if not exists, return updated document
+    );
+
+    // Send the code via twilio SMS
+    await sendSMS(phone, `Your verification code is: ${newCode}`);
+
+    res.status(200)
+    .json(
+        ApiResponse(200, {expiresAt: result.expiresAt}, "Verification code resent successfully.")
+    );
+});
+
+
+// verify code
+const verifyCode = asyncHandler(async (req, res) => {
+
+    const { phone, code } = req.body;
+    // console.log(req.body, "dddd");    
+
+    // fetch the record from db
+    const record = await VerificationCode.findOne({
+        phone: phone,
+        verificationCode: code
+    });
+    // console.log(record);
     
+    // if doesnot exists then throw error
+    if (!record) {
+        throw new ApiError(400, "Invalid verification code");        
+    }
+    // check if code is expired or not
+    if (record.expiresAt < new Date()) {
+        return res.status(400).json({ message: "Verification code expired. Please request a new one." });
+    }
+
+    // Mark user as verified
+    await User.findOneAndUpdate(
+        { phone },
+        { isPhoneVerified: true, updatedAt: new Date() },
+        { upsert: true, new: true }
+    );
+
+    // Optionally, delete the verification code record
+    await VerificationCode.deleteOne({ phone });
 
     return res
     .status(200)
     .json(
-        new ApiResponse(200, {}, "Number validated successfully.")
+        new ApiResponse(200, {}, "Phone number verified successfully.")
     );    
 });
+
 
 // generate access token for authentication here
 const generateAccessAndRefreshToken = async (userid) => {
@@ -167,4 +209,4 @@ const generateAccessAndRefreshToken = async (userid) => {
 }
 
 
-export { registerUser, loginUser, logoutUser, validateNumber}
+export { sendCode, resendCode, verifyCode, logoutUser }
