@@ -21,3 +21,7 @@ connectDB()
 app.get('/api/v1/health', (req, res) => {
     res.send('App is working awesome!')
 });
+
+
+// Export the app for serverless deployment
+export default app;
